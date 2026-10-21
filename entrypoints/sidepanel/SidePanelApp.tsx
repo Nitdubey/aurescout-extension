@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Zap, Bookmark, BookmarkCheck, ExternalLink, ChevronRight, AlertCircle, Wifi, WifiOff } from 'lucide-react';
-import { getUserProfile, isLoggedIn } from '@/lib/auth';
+import { getUserProfile, isLoggedIn, refreshUserProfile } from '@/lib/auth';
 import type { UserProfile } from '@/lib/auth';
-import { getResume } from '@/lib/storage/resume';
+import { getResume, saveResume } from '@/lib/storage/resume';
 import { saveJob, isJobSaved } from '@/lib/storage/jobs';
 import { runCloudMatch } from '@/lib/api/jd-match';
 import { getShouldApplyVerdict } from '@/lib/api/should-apply';
 import { streamRewrite } from '@/lib/api/rewrite';
+import { matchOffline } from '@/lib/matching/matcher';
 import { AuthRequiredError, InsufficientCreditsError } from '@/lib/api/client';
 import { SYNC_HOST } from '@/lib/constants';
 import type { ExtractedJob } from '@/lib/extractors/types';
@@ -43,12 +44,13 @@ export default function SidePanelApp() {
 
   // Error state
   const [error, setError] = useState<string | null>(null);
+  const [isSyncingMemory, setIsSyncingMemory] = useState(false);
 
   const streamContainerRef = useRef<HTMLDivElement>(null);
 
-  // ── Init ────────────────────────────────────────────────────────────────────
+  // ── Init & Live Event Listeners ─────────────────────────────────────────────
   useEffect(() => {
-    async function init() {
+    async function refreshData() {
       const [logIn, userProfile, resume] = await Promise.all([
         isLoggedIn(),
         getUserProfile(),
@@ -56,20 +58,60 @@ export default function SidePanelApp() {
       ]);
       setLoggedIn(logIn);
       setProfile(userProfile);
-      setHasResume(!!resume && resume.text.length > 0);
+
+      let effectiveResume = resume;
+      // Auto-hydrate Career Memory from userProfile if local storage is empty
+      if ((!effectiveResume || effectiveResume.text.length === 0) && userProfile?.resumeText) {
+        await saveResume(userProfile.resumeText);
+        effectiveResume = await getResume();
+      }
+
+      setHasResume(!!effectiveResume && effectiveResume.text.length > 0);
 
       // Fetch current tab job data from background
       const response = await chrome.runtime.sendMessage({ type: 'GET_MATCH_DATA' });
       if (response?.ok && response.data) {
-        const data = response.data as TabJobData;
+        let data = response.data as TabJobData;
+
+        // If job was detected without a resume earlier, re-calculate match now!
+        if (effectiveResume?.text && (!data.matchResult || data.matchResult.score === 0)) {
+          const matchResult = matchOffline(effectiveResume.text, data.job.description);
+          data = { ...data, matchResult };
+        }
+
         setJobData(data);
-        if (data.job.url) {
+        if (data.job?.url) {
           setIsSaved(await isJobSaved(data.job.url));
         }
+      } else {
+        setJobData(null);
       }
     }
 
-    init().catch(() => undefined);
+    refreshData().catch(() => undefined);
+
+    // Live listener for real-time job detection
+    const handleRuntimeMessage = (message: any) => {
+      if (message?.type === 'JOB_DATA_UPDATED' && message.data) {
+        const data = message.data as TabJobData;
+        setJobData(data);
+        if (data.job?.url) {
+          isJobSaved(data.job.url).then(setIsSaved).catch(() => undefined);
+        }
+      }
+    };
+    chrome.runtime.onMessage.addListener(handleRuntimeMessage);
+
+    // Handle tab switching
+    const handleTabActivated = () => {
+      refreshData().catch(() => undefined);
+    };
+    chrome.tabs.onActivated?.addListener(handleTabActivated);
+
+    return () => {
+      chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
+      chrome.tabs.onActivated?.removeListener(handleTabActivated);
+    };
   }, []);
 
   // Online/offline
@@ -152,12 +194,19 @@ export default function SidePanelApp() {
       const resume = await getResume();
       if (!resume) return;
       await streamRewrite(
-        { resumeText: resume.text, jdText: jobData.job.description },
+        {
+          resumeText: resume.text,
+          jobDescription: jobData.job.description,
+          jdText: jobData.job.description,
+          targetCompany: jobData.job.company,
+          company: jobData.job.company,
+        },
         (chunk) => setStreamingText(prev => prev + chunk),
         (result) => {
           setRewriteResult(result);
           setStreamingText('');
           setLoadingRewrite(false);
+          refreshUserProfile().then(p => { if (p) setProfile(p); }).catch(() => undefined);
         }
       );
     } catch (err) {
@@ -166,7 +215,7 @@ export default function SidePanelApp() {
       } else if (err instanceof InsufficientCreditsError) {
         setError('Need more credits for Resume Tailoring (1 credit).');
       } else {
-        setError('Rewrite failed. Please try again.');
+        setError((err as any)?.message || 'Rewrite failed. Please try again.');
       }
       setLoadingRewrite(false);
     }
@@ -187,6 +236,34 @@ export default function SidePanelApp() {
       setIsSaved(true);
     } catch {
       setError('Could not save job.');
+    }
+  }, [jobData]);
+
+  const handleSyncCareerMemory = useCallback(async () => {
+    setIsSyncingMemory(true);
+    setError(null);
+    try {
+      const fresh = await refreshUserProfile();
+      setProfile(fresh);
+      if (fresh?.resumeText && fresh.resumeText.length > 50) {
+        await saveResume(fresh.resumeText);
+        setHasResume(true);
+        if (jobData?.job) {
+          const matchResult = matchOffline(fresh.resumeText, jobData.job.description);
+          setJobData(prev => prev ? { ...prev, matchResult } : null);
+        }
+        chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+          if (tabs[0]?.id) {
+            chrome.tabs.sendMessage(tabs[0].id, { type: 'TRIGGER_DETECTION' }).catch(() => undefined);
+          }
+        });
+      } else {
+        setError('No Career Memory found. Please add skills or experience on AureScout.');
+      }
+    } catch {
+      setError('Could not sync Career Memory. Please check your connection.');
+    } finally {
+      setIsSyncingMemory(false);
     }
   }, [jobData]);
 
@@ -275,12 +352,14 @@ export default function SidePanelApp() {
             loadingCloud={loadingCloud}
             loadingApply={loadingApply}
             loadingRewrite={loadingRewrite}
+            isSyncingMemory={isSyncingMemory}
             tierColors={tierColors}
             scoreBarColor={scoreBarColor}
             onCloudMatch={handleCloudMatch}
             onShouldApply={handleShouldApply}
             onRewrite={handleRewrite}
             onSave={handleSaveJob}
+            onSyncCareerMemory={handleSyncCareerMemory}
           />
         )}
         {activeTab === 'rewrite' && (
@@ -308,18 +387,20 @@ interface MatchTabProps {
   loadingCloud: boolean;
   loadingApply: boolean;
   loadingRewrite: boolean;
+  isSyncingMemory: boolean;
   tierColors: Record<string, string>;
   scoreBarColor: Record<string, string>;
   onCloudMatch: () => void;
   onShouldApply: () => void;
   onRewrite: () => void;
   onSave: () => void;
+  onSyncCareerMemory: () => void;
 }
 
 function MatchTab({
   jobData, cloudMatch, shouldApply, hasResume, loggedIn, isSaved,
-  loadingCloud, loadingApply, loadingRewrite, tierColors, scoreBarColor,
-  onCloudMatch, onShouldApply, onRewrite, onSave,
+  loadingCloud, loadingApply, loadingRewrite, isSyncingMemory, tierColors, scoreBarColor,
+  onCloudMatch, onShouldApply, onRewrite, onSave, onSyncCareerMemory,
 }: MatchTabProps) {
   if (!jobData) {
     return (
@@ -354,20 +435,29 @@ function MatchTab({
         </a>
       </div>
 
-      {/* Offline score */}
-      <div className={`rounded-xl border p-3 ${tierClass}`}>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-semibold uppercase tracking-wide opacity-70">Offline Match</span>
-          <span className="text-xl font-bold">{matchResult.score}%</span>
+      {/* Offline score / Add Resume prompt */}
+      {hasResume ? (
+        <div className={`rounded-xl border p-3 ${tierClass}`}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold uppercase tracking-wide opacity-70">Offline Match</span>
+            <span className="text-xl font-bold">{matchResult.score}%</span>
+          </div>
+          <div className="w-full bg-white/50 rounded-full h-1.5">
+            <div
+              className={`h-1.5 rounded-full transition-all duration-500 ${barColor}`}
+              style={{ width: `${matchResult.score}%` }}
+            />
+          </div>
+          <p className="text-xs mt-1.5 font-semibold">{matchResult.tier}</p>
         </div>
-        <div className="w-full bg-white/50 rounded-full h-1.5">
-          <div
-            className={`h-1.5 rounded-full transition-all duration-500 ${barColor}`}
-            style={{ width: `${matchResult.score}%` }}
-          />
+      ) : (
+        <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50/50 p-4 text-center">
+          <p className="text-xs font-semibold text-indigo-900">Job Detected!</p>
+          <p className="text-xs text-indigo-600 mt-1 leading-relaxed">
+            Sync your Career Memory to calculate your instant match score, uncover skill gaps, and 1-click tailor your application.
+          </p>
         </div>
-        <p className="text-xs mt-1.5 font-semibold">{matchResult.tier}</p>
-      </div>
+      )}
 
       {/* Skills */}
       {matchResult.matchedSkills.length > 0 && (
@@ -433,14 +523,24 @@ function MatchTab({
       {/* Action buttons */}
       <div className="space-y-2 pt-1">
         {!hasResume ? (
-          <a
-            href={`${SYNC_HOST}/app/analyze`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition-colors"
-          >
-            <ChevronRight size={14} /> Upload Resume First
-          </a>
+          <div className="space-y-2">
+            <button
+              onClick={onSyncCareerMemory}
+              disabled={isSyncingMemory}
+              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-60"
+            >
+              {isSyncingMemory ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+              Sync Career Memory
+            </button>
+            <a
+              href={`${SYNC_HOST}/career-profile`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-1 w-full py-2 text-xs text-indigo-600 hover:text-indigo-800 transition-colors"
+            >
+              Open Career Memory on Web <ExternalLink size={10} />
+            </a>
+          </div>
         ) : (
           <>
             <button

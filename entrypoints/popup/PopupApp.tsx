@@ -81,7 +81,7 @@ export default function PopupApp() {
       </div>
 
       {/* Current match score */}
-      {currentJobScore !== null && currentJobTier && (
+      {currentJobScore !== null && currentJobScore > 0 && currentJobTier && (
         <div className="px-4 py-3 border-b border-gray-100">
           <p className="text-xs text-gray-400 mb-1">Current Job Match</p>
           <div className="flex items-center gap-2">

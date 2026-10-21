@@ -43,12 +43,14 @@ export function isJobPage(
   if (!url) return false;
   const lower = url.toLowerCase();
 
-  // LinkedIn: /jobs/view/, /jobs/collections/, search with currentJobId
+  // LinkedIn: /jobs/view/, /jobs/collections/, any /jobs/ with currentjobid
   if (lower.includes('linkedin.com')) {
     return (
       lower.includes('/jobs/view/') ||
       lower.includes('/jobs/collections/') ||
-      (lower.includes('/jobs/search/') && lower.includes('currentjobid='))
+      (lower.includes('/jobs/') && lower.includes('currentjobid=')) ||
+      lower.includes('currentjobid=') ||
+      /\/jobs\/\d{6,}/.test(lower)
     );
   }
 

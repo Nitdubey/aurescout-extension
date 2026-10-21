@@ -7,6 +7,7 @@
  */
 
 import { STORAGE_KEYS, SYNC_HOST } from '@/lib/constants';
+import { saveResume } from '@/lib/storage/resume';
 
 export interface UserProfile {
   id: string;
@@ -16,6 +17,9 @@ export interface UserProfile {
   credits: number;
   plan: 'free' | 'pro' | 'enterprise';
   isAdmin: boolean;
+  resumeText?: string;
+  skills?: string[];
+  targetRole?: string;
 }
 
 interface StoredSession {
@@ -64,20 +68,37 @@ export async function clearSession(): Promise<void> {
 }
 
 /**
+ * Helper to retrieve the active __session cookie across host variants
+ */
+export async function getSessionCookie(): Promise<string | null> {
+  try {
+    const cookie = await new Promise<chrome.cookies.Cookie | null>(resolve => {
+      chrome.cookies.get({ url: SYNC_HOST, name: '__session' }, c => resolve(c ?? null));
+    });
+    if (cookie?.value) return cookie.value;
+
+    const allCookies = await new Promise<chrome.cookies.Cookie[]>(resolve => {
+      chrome.cookies.getAll({ name: '__session' }, cookies => resolve(cookies || []));
+    });
+    const match = allCookies.find(c =>
+      c.domain.includes('aurescout.com') ||
+      c.domain === 'localhost' ||
+      c.domain === '127.0.0.1'
+    );
+    return match?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch a fresh JWT token from the SaaS backend via cookie-based auth.
  * The SaaS sets __session cookie from Clerk; we read it and exchange it.
  */
 async function fetchFreshToken(): Promise<StoredSession | null> {
   try {
-    // Get the __session cookie from aurescout.com
-    const cookie = await new Promise<chrome.cookies.Cookie | null>(resolve => {
-      chrome.cookies.get(
-        { url: SYNC_HOST, name: '__session' },
-        c => resolve(c ?? null)
-      );
-    });
-
-    if (!cookie?.value) return null;
+    const sessionCookieValue = await getSessionCookie();
+    if (!sessionCookieValue) return null;
 
     // Exchange cookie for a fresh token + user profile
     const response = await fetch(`${SYNC_HOST}/api/extension/auth`, {
@@ -85,7 +106,7 @@ async function fetchFreshToken(): Promise<StoredSession | null> {
       credentials: 'include',
       headers: {
         'X-Extension-Version': chrome.runtime.getManifest().version,
-        Cookie: `__session=${cookie.value}`,
+        Cookie: `__session=${sessionCookieValue}`,
       },
     });
 
@@ -102,6 +123,11 @@ async function fetchFreshToken(): Promise<StoredSession | null> {
       expiresAt: Date.now() + data.expiresIn * 1000,
       profile: data.user,
     };
+
+    // Auto-hydrate local resume storage with Career Memory from SaaS
+    if (data.user.resumeText && data.user.resumeText.length > 50) {
+      await saveResume(data.user.resumeText);
+    }
 
     await saveSession(session);
     return session;

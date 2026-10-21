@@ -3,7 +3,7 @@
  * Wraps all fetch calls with Bearer token auth and error handling.
  */
 
-import { getAuthToken } from '@/lib/auth';
+import { getAuthToken, getSessionCookie } from '@/lib/auth';
 import { API_BASE } from '@/lib/constants';
 
 export class APIError extends Error {
@@ -56,6 +56,11 @@ export async function apiRequest<T>(
     const token = await getAuthToken();
     if (!token) throw new AuthRequiredError();
     headers['Authorization'] = `Bearer ${token}`;
+
+    const sessionCookie = await getSessionCookie();
+    if (sessionCookie) {
+      headers['Cookie'] = `__session=${sessionCookie}`;
+    }
   }
 
   const controller = new AbortController();
@@ -64,6 +69,7 @@ export async function apiRequest<T>(
   try {
     const response = await fetch(`${API_BASE}${endpoint}`, {
       method,
+      credentials: 'include',
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
@@ -110,18 +116,25 @@ export async function streamRequest(
   const token = await getAuthToken();
   if (!token) throw new AuthRequiredError();
 
+  const sessionCookie = await getSessionCookie();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+    Accept: 'text/event-stream',
+    'X-Extension-Version': chrome.runtime.getManifest().version,
+  };
+  if (sessionCookie) {
+    headers['Cookie'] = `__session=${sessionCookie}`;
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${API_BASE}${endpoint}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        Accept: 'text/event-stream',
-        'X-Extension-Version': chrome.runtime.getManifest().version,
-      },
+      credentials: 'include',
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });

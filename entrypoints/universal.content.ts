@@ -5,9 +5,10 @@
 
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { extractJob, isJobPage, detectPlatform } from '@/lib/extractors/index';
-import { getResume } from '@/lib/storage/resume';
+import { getResume, saveResume } from '@/lib/storage/resume';
 import { isJobSaved } from '@/lib/storage/jobs';
 import { matchOffline } from '@/lib/matching/matcher';
+import { getUserProfile } from '@/lib/auth';
 
 export default defineContentScript({
   matches: [
@@ -32,7 +33,19 @@ export default defineContentScript({
         return;
       }
 
-      const resume = await getResume();
+      let resume = await getResume();
+
+      // Auto-hydrate Career Memory from userProfile if local storage is empty
+      if (!resume) {
+        try {
+          const profile = await getUserProfile();
+          if (profile?.resumeText && profile.resumeText.length > 50) {
+            await saveResume(profile.resumeText);
+            resume = await getResume();
+          }
+        } catch {}
+      }
+
       const extractionResult = await extractJob();
 
       if (!extractionResult.success || !extractionResult.job) return;
@@ -42,18 +55,27 @@ export default defineContentScript({
 
       let score = 0;
       let tier = 'NOT A FIT';
+      let matchResult: import('@/lib/matching/matcher').MatchResult = {
+        score: 0,
+        tier: 'NOT A FIT',
+        matchedSkills: [],
+        missingSkills: [],
+        resumeSkills: [],
+        jdSkills: [],
+        latencyMs: 0,
+      };
 
       if (resume) {
-        const result = matchOffline(resume.text, job.description);
-        score = result.score;
-        tier = result.tier;
-
-        chrome.runtime.sendMessage({
-          type: 'JOB_DETECTED',
-          job,
-          matchResult: result,
-        });
+        matchResult = matchOffline(resume.text, job.description);
+        score = matchResult.score;
+        tier = matchResult.tier;
       }
+
+      chrome.runtime.sendMessage({
+        type: 'JOB_DETECTED',
+        job,
+        matchResult,
+      }).catch(() => undefined);
 
       const saved = await isJobSaved(window.location.href);
       cleanupBadge?.();
@@ -138,6 +160,15 @@ export default defineContentScript({
         detectAndInject().catch(() => undefined);
       }, delay);
     }
+
+    // Direct trigger from background or sidepanel
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg?.type === 'TRIGGER_DETECTION') {
+        scheduleDetection(100);
+        sendResponse({ ok: true });
+      }
+      return false;
+    });
 
     // SPA navigation monitoring
     const originalPushState = history.pushState.bind(history);

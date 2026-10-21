@@ -11,14 +11,16 @@ import type { SavedJob } from '@/lib/storage/jobs';
 
 // ── Message types ─────────────────────────────────────────────────────────────
 export type BackgroundMessage =
-  | { type: 'OPEN_SIDE_PANEL'; tabId: number }
+  | { type: 'OPEN_SIDE_PANEL'; tabId?: number }
   | { type: 'GET_MATCH_DATA' }
   | { type: 'SET_MATCH_BADGE'; tabId: number; score: number; tier: string }
   | { type: 'SAVE_JOB'; job: Omit<SavedJob, 'id' | 'savedAt' | 'status'> }
   | { type: 'GET_RESUME' }
   | { type: 'GET_SAVED_JOBS' }
   | { type: 'SYNC_PROFILE' }
-  | { type: 'JOB_DETECTED'; job: ExtractedJob; matchResult: MatchResult };
+  | { type: 'JOB_DETECTED'; job: ExtractedJob; matchResult: MatchResult }
+  | { type: 'TRIGGER_DETECTION' }
+  | { type: 'JOB_DATA_UPDATED'; tabId?: number; data?: TabJobData };
 
 export type BackgroundResponse =
   | { ok: true; data?: unknown }
@@ -75,7 +77,23 @@ export default defineBackground(() => {
       switch (message.type) {
         // ── Open Side Panel ─────────────────────────────────────────────────
         case 'OPEN_SIDE_PANEL': {
-          chrome.sidePanel.open({ tabId: message.tabId }).then(() => {
+          const openPanel = async () => {
+            let targetTabId = message.tabId ?? tabId;
+            if (!targetTabId) {
+              const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+              targetTabId = activeTab?.id;
+            }
+            if (targetTabId) {
+              await chrome.sidePanel.open({ tabId: targetTabId });
+            } else {
+              const currentWindow = await chrome.windows.getCurrent();
+              if (currentWindow?.id) {
+                await (chrome.sidePanel as any).open({ windowId: currentWindow.id });
+              }
+            }
+          };
+
+          openPanel().then(() => {
             sendResponse({ ok: true });
           }).catch(err => {
             sendResponse({ ok: false, error: String(err) });
@@ -86,21 +104,31 @@ export default defineBackground(() => {
         // ── Job Detected by Content Script ──────────────────────────────────
         case 'JOB_DETECTED': {
           if (tabId) {
-            tabJobData.set(tabId, {
+            const detectedData = {
               job: message.job,
               matchResult: message.matchResult,
               detectedAt: Date.now(),
-            });
+            };
+            tabJobData.set(tabId, detectedData);
 
-            // Set toolbar badge
+            // Set toolbar badge if score > 0
             const score = message.matchResult.score;
             const tier = message.matchResult.tier;
-            chrome.action.setBadgeText({ text: String(score), tabId });
-            chrome.action.setBadgeBackgroundColor({
-              color: BADGE_COLORS[tier] ?? '#6b7280',
+            if (score > 0) {
+              chrome.action.setBadgeText({ text: String(score), tabId }).catch(() => undefined);
+              chrome.action.setBadgeBackgroundColor({
+                color: BADGE_COLORS[tier] ?? '#6b7280',
+                tabId,
+              }).catch(() => undefined);
+              chrome.action.setBadgeTextColor({ color: '#ffffff', tabId }).catch(() => undefined);
+            }
+
+            // Broadcast to Side Panel / Popup
+            chrome.runtime.sendMessage({
+              type: 'JOB_DATA_UPDATED',
               tabId,
-            });
-            chrome.action.setBadgeTextColor({ color: '#ffffff', tabId });
+              data: detectedData,
+            }).catch(() => undefined);
           }
           sendResponse({ ok: true });
           return false;
@@ -109,21 +137,43 @@ export default defineBackground(() => {
         // ── Set match badge from content ────────────────────────────────────
         case 'SET_MATCH_BADGE': {
           const { tabId: targetTab, score, tier } = message;
-          chrome.action.setBadgeText({ text: String(score), tabId: targetTab });
+          chrome.action.setBadgeText({ text: String(score), tabId: targetTab }).catch(() => undefined);
           chrome.action.setBadgeBackgroundColor({
             color: BADGE_COLORS[tier] ?? '#6b7280',
             tabId: targetTab,
-          });
-          chrome.action.setBadgeTextColor({ color: '#ffffff', tabId: targetTab });
+          }).catch(() => undefined);
+          chrome.action.setBadgeTextColor({ color: '#ffffff', tabId: targetTab }).catch(() => undefined);
           sendResponse({ ok: true });
           return false;
         }
 
         // ── Get match data for current tab ──────────────────────────────────
         case 'GET_MATCH_DATA': {
-          const data = tabId ? tabJobData.get(tabId) : undefined;
-          sendResponse({ ok: true, data });
-          return false;
+          const fetchMatchData = async () => {
+            let targetTabId = tabId;
+            let activeUrl = sender.tab?.url;
+            if (!targetTabId) {
+              const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+              targetTabId = activeTab?.id;
+              activeUrl = activeTab?.url;
+            }
+            if (targetTabId) {
+              const data = tabJobData.get(targetTabId);
+              // Only trigger detection on legitimate web pages, not chrome:// or extension pages
+              if (!data && activeUrl && !activeUrl.startsWith('chrome://') && !activeUrl.startsWith('chrome-extension://')) {
+                chrome.tabs.sendMessage(targetTabId, { type: 'TRIGGER_DETECTION' }).catch(() => undefined);
+              }
+              return data;
+            }
+            return undefined;
+          };
+
+          fetchMatchData().then(data => {
+            sendResponse({ ok: true, data });
+          }).catch(err => {
+            sendResponse({ ok: false, error: String(err) });
+          });
+          return true;
         }
 
         // ── Get resume ──────────────────────────────────────────────────────
@@ -176,13 +226,14 @@ export default defineBackground(() => {
   // ── Clear tab data when tab closes ─────────────────────────────────────────
   chrome.tabs.onRemoved.addListener(tabId => {
     tabJobData.delete(tabId);
-    chrome.action.setBadgeText({ text: '', tabId });
+    // Note: Chrome automatically cleans up badges for closed tabs.
+    // Calling setBadgeText on a removed tab throws "No tab with id: <tabId>".
   });
 
   // ── Clear badge on navigation ───────────────────────────────────────────────
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === 'loading') {
-      chrome.action.setBadgeText({ text: '', tabId });
+      chrome.action.setBadgeText({ text: '', tabId }).catch(() => undefined);
       tabJobData.delete(tabId);
     }
   });

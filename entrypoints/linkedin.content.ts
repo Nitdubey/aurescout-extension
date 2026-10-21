@@ -15,54 +15,186 @@ import { defineContentScript } from 'wxt/utils/define-content-script';
 import { extractFromLinkedIn } from '@/lib/extractors/linkedin';
 import { extractFromJsonLD } from '@/lib/extractors/jsonld';
 import { isJobPage } from '@/lib/extractors/utils';
-import { getResume } from '@/lib/storage/resume';
+import { getResume, saveResume } from '@/lib/storage/resume';
 import { isJobSaved } from '@/lib/storage/jobs';
 import { matchOffline } from '@/lib/matching/matcher';
+import { getUserProfile } from '@/lib/auth';
 
 export default defineContentScript({
   matches: ['*://*.linkedin.com/*'],
   runAt: 'document_idle',
   main() {
-    let currentUrl = window.location.href;
+    let lastUrl = window.location.href;
     let cleanupBadge: (() => void) | null = null;
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let isDetecting = false;
+
+    function isGarbageTitle(text: string): boolean {
+      if (!text) return true;
+      const lower = text.toLowerCase().trim();
+      const garbage = [
+        'are these results helpful',
+        'jobs that match your profile',
+        'determine your fit',
+        'about the job',
+        'people you can reach out to',
+        'how you compare',
+        'search',
+        'unknown',
+        'feedback',
+        'messaging',
+        'notifications',
+        'show match details',
+        'tailor my resume',
+        'help me stand out',
+      ];
+      return garbage.some(g => lower.includes(g)) || lower.length < 3;
+    }
+
+    // ── Helper: find the title anchor inside the detail pane ───────────────────
+    function findAnchor(): HTMLElement | null {
+      // Must target the RIGHT detail pane only, NEVER the left search list
+      let detailPane: HTMLElement | null =
+        document.querySelector('.scaffold-layout__detail') ||
+        document.querySelector('.jobs-search__job-details--wrapper') ||
+        document.querySelector('.jobs-search__job-details') ||
+        document.querySelector('.job-view-layout') ||
+        document.querySelector('.jobs-details__main-content');
+
+      if (!detailPane) {
+        const jobDetailsEl =
+          document.querySelector('#job-details') ||
+          document.querySelector('[id^="JobDetails_AboutTheJob_"]') ||
+          document.querySelector('.jobs-description__content');
+
+        if (jobDetailsEl) {
+          detailPane = (
+            jobDetailsEl.closest('.scaffold-layout__detail') ||
+            jobDetailsEl.closest('.jobs-search__job-details--wrapper') ||
+            jobDetailsEl.closest('main') ||
+            jobDetailsEl.parentElement?.parentElement
+          ) as HTMLElement | null;
+        }
+      }
+
+      if (!detailPane) return null;
+
+      const selectors = [
+        '.job-details-jobs-unified-top-card__job-title h1',
+        '.job-details-jobs-unified-top-card__job-title h2',
+        '.job-details-jobs-unified-top-card__job-title a',
+        '.job-details-jobs-unified-top-card__job-title',
+        '.jobs-unified-top-card__job-title h1',
+        '.jobs-unified-top-card__job-title h2',
+        '.jobs-unified-top-card__job-title',
+        'h1.job-details-jobs-unified-top-card__job-title',
+        'h2.job-details-jobs-unified-top-card__job-title',
+        'h1[class*="job-details-jobs-unified-top-card__job-title"]',
+        'h2[class*="job-details-jobs-unified-top-card__job-title"]',
+        'h1[class*="job-title"]',
+        'h2[class*="job-title"]',
+        '.top-card-layout__title',
+        'h1.t-24',
+        'h2.t-24',
+        'h1.t-bold',
+        'h2.t-bold',
+        'a[href*="/jobs/view/"]',
+      ];
+
+      for (const sel of selectors) {
+        const el = detailPane.querySelector(sel);
+        if (
+          el &&
+          el instanceof HTMLElement &&
+          el.innerText.trim().length > 3 &&
+          !isGarbageTitle(el.innerText) &&
+          !el.closest('#job-details') &&
+          !el.closest('[id^="JobDetails_AboutTheJob_"]') &&
+          !el.closest('.jobs-description')
+        ) {
+          return el;
+        }
+      }
+      return null;
+    }
 
     // ── Main job detection + badge injection ─────────────────────────────────
-    async function detectAndInject() {
+    async function detectAndInject(retryCount = 0) {
+      if (isDetecting) return;
       if (!isJobPage(window.location.href)) {
         cleanupBadge?.();
         cleanupBadge = null;
         return;
       }
 
-      const resume = await getResume();
-      if (!resume) {
-        injectNoResumeBadge();
-        return;
+      isDetecting = true;
+      try {
+        const job = extractFromJsonLD() ?? extractFromLinkedIn();
+
+        // If job element not found yet (AJAX loading), retry up to 5 times
+        if (!job) {
+          if (retryCount < 5) {
+            setTimeout(() => detectAndInject(retryCount + 1), 600);
+          }
+          return;
+        }
+
+        // If description is still loading (< 50 chars), retry before giving up
+        if (job.description.length < 50 && retryCount < 5) {
+          setTimeout(() => detectAndInject(retryCount + 1), 600);
+          return;
+        }
+
+        let resume = await getResume();
+
+        // If local resume is missing, auto-hydrate from Career Memory
+        if (!resume) {
+          try {
+            const profile = await getUserProfile();
+            if (profile?.resumeText && profile.resumeText.length > 50) {
+              await saveResume(profile.resumeText);
+              resume = await getResume();
+            }
+          } catch {}
+        }
+
+        if (!resume) {
+          // Broadcast detected job so side panel displays details even without resume
+          chrome.runtime.sendMessage({
+            type: 'JOB_DETECTED',
+            job: { ...job, platform: 'LinkedIn' },
+            matchResult: {
+              score: 0,
+              tier: 'NOT A FIT',
+              matchedSkills: [],
+              missingSkills: [],
+              resumeSkills: [],
+              jdSkills: [],
+              latencyMs: 0,
+            },
+          }).catch(() => undefined);
+
+          cleanupBadge?.();
+          cleanupBadge = injectNoResumeBadge();
+          return;
+        }
+
+        const result = matchOffline(resume.text, job.description);
+
+        // Notify background to set toolbar badge and update side panel
+        chrome.runtime.sendMessage({
+          type: 'JOB_DETECTED',
+          job: { ...job, platform: 'LinkedIn' },
+          matchResult: result,
+        }).catch(() => undefined);
+
+        // Check if already saved
+        const saved = await isJobSaved(window.location.href);
+
+        cleanupBadge?.();
+        cleanupBadge = injectMatchBadge(result.score, result.tier, saved);
+      } finally {
+        isDetecting = false;
       }
-
-      // Extract job data (JSON-LD first, then DOM)
-      const job =
-        extractFromJsonLD() ??
-        extractFromLinkedIn();
-
-      if (!job || job.description.length < 50) return;
-
-      const result = matchOffline(resume.text, job.description);
-
-      // Notify background to set toolbar badge
-      chrome.runtime.sendMessage({
-        type: 'JOB_DETECTED',
-        job: { ...job, platform: 'LinkedIn' },
-        matchResult: result,
-      });
-
-      // Check if already saved
-      const saved = await isJobSaved(window.location.href);
-
-      // Clean up old badge and inject new one
-      cleanupBadge?.();
-      cleanupBadge = injectMatchBadge(result.score, result.tier, saved);
     }
 
     // ── Badge injection using Shadow DOM ────────────────────────────────────
@@ -71,14 +203,9 @@ export default defineContentScript({
       tier: string,
       isSaved: boolean
     ): () => void {
-      // Find the anchor element near the job title
-      const anchor =
-        document.querySelector('h1.job-details-jobs-unified-top-card__job-title') ??
-        document.querySelector('h1[class*="job-title"]') ??
-        document.querySelector('h1.t-24') ??
-        document.querySelector('.jobs-details__main-content h1');
-
+      const anchor = findAnchor();
       if (!anchor?.parentElement) return () => undefined;
+      if (anchor.parentElement.querySelector('[data-aurescout-badge]')) return () => undefined;
 
       const colors: Record<string, string> = {
         'STRONG FIT': '#22c55e',
@@ -87,14 +214,11 @@ export default defineContentScript({
       };
       const color = colors[tier] ?? '#6b7280';
 
-      // Create host element
       const host = document.createElement('div');
       host.setAttribute('data-aurescout-badge', 'true');
       host.style.cssText = 'display:inline-flex;align-items:center;margin-left:8px;vertical-align:middle;';
 
-      // Attach closed Shadow DOM
       const shadow = host.attachShadow({ mode: 'closed' });
-
       shadow.innerHTML = `
         <style>
           :host { display: inline-flex; align-items: center; }
@@ -128,8 +252,6 @@ export default defineContentScript({
 
       const button = shadow.querySelector('button') as HTMLButtonElement;
       button.addEventListener('click', () => {
-        // Open side panel
-        const tabId = undefined; // content script can't get tab ID directly
         chrome.runtime.sendMessage({ type: 'OPEN_SIDE_PANEL' });
       });
 
@@ -138,17 +260,14 @@ export default defineContentScript({
       return () => host.remove();
     }
 
-    function injectNoResumeBadge(): void {
-      const anchor = document.querySelector('h1[class*="job-title"]') ??
-        document.querySelector('h1');
-      if (!anchor?.parentElement) return;
-
-      // Don't inject twice
-      if (anchor.parentElement.querySelector('[data-aurescout-badge]')) return;
+    function injectNoResumeBadge(): () => void {
+      const anchor = findAnchor();
+      if (!anchor?.parentElement) return () => undefined;
+      if (anchor.parentElement.querySelector('[data-aurescout-badge]')) return () => undefined;
 
       const host = document.createElement('div');
       host.setAttribute('data-aurescout-badge', 'true');
-      host.style.cssText = 'display:inline-flex;align-items:center;margin-left:8px;';
+      host.style.cssText = 'display:inline-flex;align-items:center;margin-left:8px;vertical-align:middle;';
 
       const shadow = host.attachShadow({ mode: 'closed' });
       shadow.innerHTML = `
@@ -159,6 +278,7 @@ export default defineContentScript({
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             font-size: 11px; font-weight: 500; cursor: pointer;
             background: #f3f4f6; color: #6b7280; border: 1px dashed #d1d5db;
+            white-space: nowrap;
           }
           .badge:hover { background: #e5e7eb; }
         </style>
@@ -173,64 +293,37 @@ export default defineContentScript({
       });
 
       anchor.parentElement.insertBefore(host, anchor.nextSibling);
+
+      return () => host.remove();
     }
 
-    // ── Debounced detection ──────────────────────────────────────────────────
-    function scheduleDetection(delay = 1500) {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        detectAndInject().catch(() => undefined);
-      }, delay);
-    }
+    // ── Listen for direct trigger from Background / SidePanel ────────────────
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg?.type === 'TRIGGER_DETECTION') {
+        detectAndInject(0).catch(() => undefined);
+        sendResponse({ ok: true });
+      }
+      return false;
+    });
 
-    // ── SPA navigation monitoring ────────────────────────────────────────────
-    // LinkedIn is a full SPA — pushState/replaceState don't fire popstate
-    const originalPushState = history.pushState.bind(history);
-    const originalReplaceState = history.replaceState.bind(history);
-
-    history.pushState = function (...args) {
-      originalPushState(...args);
-      if (window.location.href !== currentUrl) {
-        currentUrl = window.location.href;
+    // ── Continuous check for URL changes and unmounted badges ────────────────
+    setInterval(() => {
+      const urlChanged = window.location.href !== lastUrl;
+      if (urlChanged) {
+        lastUrl = window.location.href;
         cleanupBadge?.();
         cleanupBadge = null;
-        scheduleDetection(1500);
+        detectAndInject(0).catch(() => undefined);
+        return;
       }
-    };
 
-    history.replaceState = function (...args) {
-      originalReplaceState(...args);
-      if (window.location.href !== currentUrl) {
-        currentUrl = window.location.href;
-        scheduleDetection(1000);
+      // If we are on a job page but badge was not yet mounted, trigger detection
+      if (isJobPage(window.location.href) && !document.querySelector('[data-aurescout-badge]')) {
+        detectAndInject(0).catch(() => undefined);
       }
-    };
-
-    window.addEventListener('popstate', () => {
-      if (window.location.href !== currentUrl) {
-        currentUrl = window.location.href;
-        cleanupBadge?.();
-        cleanupBadge = null;
-        scheduleDetection(1200);
-      }
-    });
-
-    // ── MutationObserver for dynamic content ─────────────────────────────────
-    // LinkedIn loads job descriptions asynchronously after navigation
-    const observer = new MutationObserver(() => {
-      const h1 = document.querySelector('h1[class*="job-title"]');
-      const badge = document.querySelector('[data-aurescout-badge]');
-      if (h1 && !badge && isJobPage(window.location.href)) {
-        scheduleDetection(800);
-      }
-    });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
+    }, 700);
 
     // ── Initial detection ─────────────────────────────────────────────────────
-    scheduleDetection(500);
+    setTimeout(() => detectAndInject(0).catch(() => undefined), 400);
   },
 });
