@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7c3aed;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#4f46e5;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="19.2" fill="url(#grad)"/>
+  <!-- Lightning bolt (⚡ symbol) -->
+  <path d="M 72 36 L 60 60 L 70 60 L 56 92 L 68 68 L 58 68 Z" fill="white" opacity="0.95"/>
+</svg>

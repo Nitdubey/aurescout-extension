@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": false,
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./*"],
+      "wxt/*": ["./node_modules/wxt/dist/types/*"]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".wxt/types.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".output",
+    ".wxt/dist"
+  ]
+}
