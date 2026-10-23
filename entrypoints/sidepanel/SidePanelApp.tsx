@@ -291,9 +291,9 @@ export default function SidePanelApp() {
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full bg-white text-gray-900 text-sm font-sans">
+    <div className="flex flex-col h-screen w-full bg-white text-gray-900 text-sm font-sans overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-violet-600 to-indigo-600">
+      <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-violet-600 to-indigo-600">
         <div className="flex items-center gap-2">
           <span className="text-white font-bold text-base tracking-tight">⚡ AureScout</span>
           {!isOnline && (
@@ -323,14 +323,14 @@ export default function SidePanelApp() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-gray-100">
+      <div className="shrink-0 flex border-b border-gray-100 bg-white">
         {(['match', 'rewrite', 'saved'] as PanelTab[]).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             className={`flex-1 py-2 text-xs font-medium capitalize transition-colors ${
               activeTab === tab
-                ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50/40'
+                ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50/40 font-semibold'
                 : 'text-gray-500 hover:text-gray-700'
             }`}
           >
@@ -341,15 +341,15 @@ export default function SidePanelApp() {
 
       {/* Error bar */}
       {error && (
-        <div className="flex items-center gap-2 px-4 py-2 bg-red-50 border-b border-red-100 text-red-600 text-xs">
+        <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-red-50 border-b border-red-100 text-red-600 text-xs">
           <AlertCircle size={12} />
           <span className="flex-1">{error}</span>
           <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">✕</button>
         </div>
       )}
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      {/* Scrollable Content Container */}
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
         {activeTab === 'match' && (
           <MatchTab
             jobData={jobData}
@@ -429,7 +429,7 @@ function MatchTab({
   const barColor = scoreBarColor[matchResult.tier] ?? 'bg-gray-400';
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-4 space-y-4 pb-12">
       {/* Job header */}
       <div>
         <h2 className="font-semibold text-gray-900 text-sm leading-tight line-clamp-2">{job.title}</h2>
@@ -651,7 +651,7 @@ function RewriteTab({
   }
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-4 space-y-4 pb-12">
       {isLoading && (
         <div className="flex items-center gap-2 text-indigo-600 text-xs">
           <Loader2 size={14} className="animate-spin" />
@@ -743,7 +743,7 @@ function SavedTab() {
   }
 
   return (
-    <div className="p-4 space-y-2">
+    <div className="p-4 space-y-2 pb-12">
       <p className="text-xs text-gray-400 font-medium">{jobs.length} saved job{jobs.length !== 1 ? 's' : ''}</p>
       {jobs.map(job => (
         <a
