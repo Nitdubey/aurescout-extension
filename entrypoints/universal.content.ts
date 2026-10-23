@@ -88,8 +88,6 @@ export default defineContentScript({
       isSaved: boolean,
       noResume: boolean
     ): () => void {
-      const platform = detectPlatform();
-
       // Find best injection anchor per platform
       const anchor =
         document.querySelector('[data-testid="job-title"]') ??         // Indeed
@@ -170,26 +168,30 @@ export default defineContentScript({
       return false;
     });
 
-    // SPA navigation monitoring
-    const originalPushState = history.pushState.bind(history);
-    history.pushState = function (...args) {
-      originalPushState(...args);
-      if (window.location.href !== currentUrl) {
-        currentUrl = window.location.href;
-        cleanupBadge?.();
-        cleanupBadge = null;
-        scheduleDetection();
-      }
-    };
-
+    // SPA navigation monitoring via continuous check + popstate
     window.addEventListener('popstate', () => {
       if (window.location.href !== currentUrl) {
         currentUrl = window.location.href;
         cleanupBadge?.();
         cleanupBadge = null;
-        scheduleDetection();
+        scheduleDetection(300);
       }
     });
+
+    setInterval(() => {
+      if (window.location.href !== currentUrl) {
+        currentUrl = window.location.href;
+        cleanupBadge?.();
+        cleanupBadge = null;
+        scheduleDetection(300);
+        return;
+      }
+
+      // If on a job page and badge isn't mounted, detect
+      if (isJobPage(window.location.href) && !document.querySelector('[data-aurescout-badge]')) {
+        scheduleDetection(400);
+      }
+    }, 1200);
 
     scheduleDetection(600);
   },

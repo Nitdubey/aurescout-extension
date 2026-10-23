@@ -107,8 +107,9 @@ export async function updateJobStatus(
   const id = urlToId(url);
   const jobs = await getAllJobs();
   const idx = jobs.findIndex(j => j.id === id);
-  if (idx >= 0) {
-    jobs[idx] = { ...jobs[idx], status, ...extra };
+  const existing = jobs[idx];
+  if (existing) {
+    jobs[idx] = { ...existing, status, ...extra };
     await setAllJobs(jobs);
   }
 }

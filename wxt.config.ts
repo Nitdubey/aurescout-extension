@@ -2,11 +2,17 @@ import { defineConfig } from 'wxt';
 
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
-  manifest: {
+  manifest: ({ mode }) => ({
     name: 'AureScout — AI Job Matcher & ATS Scanner',
     description: 'Instantly match your resume to any job on LinkedIn, Indeed & Naukri. AI ATS scoring, skill gap analysis & 1-click resume tailoring.',
     version: '1.0.0',
-    permissions: ['storage', 'sidePanel', 'scripting', 'tabs', 'cookies', 'alarms'],
+    icons: {
+      16: 'icons/icon-16.png',
+      32: 'icons/icon-32.png',
+      48: 'icons/icon-48.png',
+      128: 'icons/icon-128.png',
+    },
+    permissions: ['storage', 'sidePanel', 'tabs', 'cookies', 'alarms'],
     host_permissions: [
       'https://*.linkedin.com/*',
       'https://*.indeed.com/*',
@@ -16,23 +22,26 @@ export default defineConfig({
       'https://*.boards.greenhouse.io/*',
       'https://*.jobs.lever.co/*',
       'https://*.aurescout.com/*',
-      'http://localhost:3000/*'
+      ...(mode === 'development' ? ['http://localhost:3000/*'] : []),
     ],
     side_panel: {
-      default_path: 'sidepanel/index.html'
+      default_path: 'sidepanel.html',
     },
     action: {
       default_title: 'AureScout',
+      default_icon: {
+        16: 'icons/icon-16.png',
+        32: 'icons/icon-32.png',
+        48: 'icons/icon-48.png',
+        128: 'icons/icon-128.png',
+      },
     },
     web_accessible_resources: [
       {
-        resources: ['icon/*.png'],
+        resources: ['icons/*.png', 'icons/*.svg'],
         matches: ['<all_urls>'],
-        use_dynamic_url: true
-      }
-    ]
-  },
-  runner: {
-    startUrls: ['https://www.linkedin.com/jobs/'],
-  },
+        use_dynamic_url: true,
+      },
+    ],
+  }),
 });

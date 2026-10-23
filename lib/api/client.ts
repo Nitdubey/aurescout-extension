@@ -128,7 +128,12 @@ export async function streamRequest(
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const resetTimeout = () => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  };
 
   try {
     const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -152,6 +157,8 @@ export async function streamRequest(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+
+      resetTimeout(); // Reset timer on each received stream chunk
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');

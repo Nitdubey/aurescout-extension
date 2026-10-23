@@ -7,6 +7,8 @@ import { saveJob, isJobSaved } from '@/lib/storage/jobs';
 import { runCloudMatch } from '@/lib/api/jd-match';
 import { getShouldApplyVerdict } from '@/lib/api/should-apply';
 import { streamRewrite } from '@/lib/api/rewrite';
+import { upsertApplication } from '@/lib/api/tracker';
+import { enqueue } from '@/lib/storage/sync-queue';
 import { matchOffline } from '@/lib/matching/matcher';
 import { AuthRequiredError, InsufficientCreditsError } from '@/lib/api/client';
 import { SYNC_HOST } from '@/lib/constants';
@@ -224,7 +226,7 @@ export default function SidePanelApp() {
   const handleSaveJob = useCallback(async () => {
     if (!jobData) return;
     try {
-      await saveJob({
+      const saved = await saveJob({
         url: jobData.job.url,
         title: jobData.job.title,
         company: jobData.job.company,
@@ -234,10 +236,17 @@ export default function SidePanelApp() {
         matchTier: jobData.matchResult.tier,
       });
       setIsSaved(true);
+
+      // Instantly sync to cloud tracker if online and logged in
+      if (loggedIn) {
+        upsertApplication(saved).catch(() => {
+          enqueue('SAVE_JOB', saved as any).catch(() => undefined);
+        });
+      }
     } catch {
       setError('Could not save job.');
     }
-  }, [jobData]);
+  }, [jobData, loggedIn]);
 
   const handleSyncCareerMemory = useCallback(async () => {
     setIsSyncingMemory(true);
@@ -302,7 +311,7 @@ export default function SidePanelApp() {
           )}
           {!loggedIn && loggedIn !== null && (
             <a
-              href={`${SYNC_HOST}/sign-in`}
+              href={`${SYNC_HOST}/login`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs bg-white text-indigo-600 px-3 py-1 rounded-full font-semibold hover:bg-indigo-50 transition-colors"
@@ -608,8 +617,31 @@ function RewriteTab({
   streamingText: string;
   rewriteResult: RewriteResult | null;
   isLoading: boolean;
-  streamContainerRef: React.RefObject<HTMLDivElement>;
+  streamContainerRef: React.RefObject<HTMLDivElement | null>;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (!rewriteResult?.rewrittenResume) return;
+    try {
+      await navigator.clipboard.writeText(rewriteResult.rewrittenResume);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback in case document is not focused in sidepanel
+      const textarea = document.createElement('textarea');
+      textarea.value = rewriteResult.rewrittenResume;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
   if (!isLoading && !streamingText && !rewriteResult) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-3 px-6 text-center">
@@ -676,10 +708,14 @@ function RewriteTab({
           </div>
 
           <button
-            onClick={() => navigator.clipboard.writeText(rewriteResult.rewrittenResume)}
-            className="w-full py-2 text-xs text-indigo-600 border border-indigo-200 rounded-xl hover:bg-indigo-50 transition-colors"
+            onClick={handleCopy}
+            className={`w-full py-2.5 text-xs font-semibold rounded-xl border transition-colors flex items-center justify-center gap-1.5 ${
+              copied
+                ? 'bg-green-50 border-green-200 text-green-700'
+                : 'text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+            }`}
           >
-            📋 Copy to Clipboard
+            {copied ? '✓ Copied to Clipboard!' : '📋 Copy to Clipboard'}
           </button>
         </div>
       )}

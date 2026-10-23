@@ -10,7 +10,7 @@ export type Platform =
   | 'Lever'
   | 'Unknown';
 
-export type ExtractionMethod = 'jsonld' | 'dom' | 'intercepted';
+export type ExtractionMethod = 'jsonld' | 'dom' | 'intercepted' | 'fallback';
 
 export interface ExtractedJob {
   title: string;

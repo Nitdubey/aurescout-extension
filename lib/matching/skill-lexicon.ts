@@ -323,27 +323,31 @@ export function extractSkillsFromText(text: string): string[] {
   const found = new Set<string>();
 
   for (let i = 0; i < words.length; i++) {
+    const w0 = words[i];
+    if (!w0) continue;
+
     // Unigram
-    const uni = normalizeSkill(words[i]);
+    const uni = normalizeSkill(w0);
     if (uni) found.add(uni);
 
     // Bigram
-    if (i + 1 < words.length) {
-      const bi = normalizeSkill(`${words[i]} ${words[i + 1]}`);
+    const w1 = words[i + 1];
+    if (w1) {
+      const bi = normalizeSkill(`${w0} ${w1}`);
       if (bi) found.add(bi);
     }
 
     // Trigram
-    if (i + 2 < words.length) {
-      const tri = normalizeSkill(`${words[i]} ${words[i + 1]} ${words[i + 2]}`);
+    const w2 = words[i + 2];
+    if (w1 && w2) {
+      const tri = normalizeSkill(`${w0} ${w1} ${w2}`);
       if (tri) found.add(tri);
     }
 
     // 4-gram (for "domain driven design", "infrastructure as code", etc.)
-    if (i + 3 < words.length) {
-      const quad = normalizeSkill(
-        `${words[i]} ${words[i + 1]} ${words[i + 2]} ${words[i + 3]}`
-      );
+    const w3 = words[i + 3];
+    if (w1 && w2 && w3) {
+      const quad = normalizeSkill(`${w0} ${w1} ${w2} ${w3}`);
       if (quad) found.add(quad);
     }
   }

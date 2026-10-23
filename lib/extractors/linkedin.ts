@@ -215,7 +215,7 @@ export function extractFromLinkedIn(): ExtractedJob | null {
     ], detailPane);
 
     if (location && location.includes('·')) {
-      location = location.split('·')[0].trim();
+      location = location.split('·')[0]?.trim() || '';
     }
 
     // Secondary scan for "City, Country · ... " text block
@@ -224,7 +224,7 @@ export function extractFromLinkedIn(): ExtractedJob | null {
       for (const el of topcardEls) {
         const text = (el as HTMLElement).innerText?.trim() || '';
         if (text.includes('·') && (text.includes('ago') || text.includes('applicant') || text.includes('promoted'))) {
-          location = text.split('·')[0].trim();
+          location = text.split('·')[0]?.trim() || '';
           break;
         }
       }

@@ -1,27 +1,14 @@
 {
+  "extends": "./.wxt/tsconfig.json",
   "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": false,
+    "skipLibCheck": true,
     "noEmit": true,
-    "paths": {
-      "@/*": ["./*"],
-      "wxt/*": ["./node_modules/wxt/dist/types/*"]
-    }
+    "types": ["chrome"]
   },
   "include": [
     "**/*.ts",
     "**/*.tsx",
-    ".wxt/types.d.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    ".output",
-    ".wxt/dist"
+    ".wxt/wxt.d.ts"
   ]
 }

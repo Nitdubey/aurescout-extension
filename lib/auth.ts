@@ -101,12 +101,15 @@ async function fetchFreshToken(): Promise<StoredSession | null> {
     if (!sessionCookieValue) return null;
 
     // Exchange cookie for a fresh token + user profile
+    // Note: Standard fetch drops "Cookie" header in browser extensions, so we pass
+    // Authorization: Bearer <cookie> and X-Session-Token for 100% reliable auth
     const response = await fetch(`${SYNC_HOST}/api/extension/auth`, {
       method: 'GET',
       credentials: 'include',
       headers: {
         'X-Extension-Version': chrome.runtime.getManifest().version,
-        Cookie: `__session=${sessionCookieValue}`,
+        'Authorization': `Bearer ${sessionCookieValue}`,
+        'X-Session-Token': sessionCookieValue,
       },
     });
 

@@ -27,6 +27,15 @@ export default defineContentScript({
     let lastUrl = window.location.href;
     let cleanupBadge: (() => void) | null = null;
     let isDetecting = false;
+    let retryTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveFails = 0;
+
+    function clearPendingRetry() {
+      if (retryTimeoutId) {
+        clearTimeout(retryTimeoutId);
+        retryTimeoutId = null;
+      }
+    }
 
     function isGarbageTitle(text: string): boolean {
       if (!text) return true;
@@ -121,6 +130,7 @@ export default defineContentScript({
     async function detectAndInject(retryCount = 0) {
       if (isDetecting) return;
       if (!isJobPage(window.location.href)) {
+        clearPendingRetry();
         cleanupBadge?.();
         cleanupBadge = null;
         return;
@@ -130,19 +140,25 @@ export default defineContentScript({
       try {
         const job = extractFromJsonLD() ?? extractFromLinkedIn();
 
-        // If job element not found yet (AJAX loading), retry up to 5 times
+        // If job element not found yet (AJAX loading), retry with controlled backoff
         if (!job) {
-          if (retryCount < 5) {
-            setTimeout(() => detectAndInject(retryCount + 1), 600);
+          if (retryCount < 4) {
+            clearPendingRetry();
+            retryTimeoutId = setTimeout(() => detectAndInject(retryCount + 1), 750);
+          } else {
+            consecutiveFails++;
           }
           return;
         }
 
         // If description is still loading (< 50 chars), retry before giving up
-        if (job.description.length < 50 && retryCount < 5) {
-          setTimeout(() => detectAndInject(retryCount + 1), 600);
+        if (job.description.length < 50 && retryCount < 4) {
+          clearPendingRetry();
+          retryTimeoutId = setTimeout(() => detectAndInject(retryCount + 1), 750);
           return;
         }
+
+        consecutiveFails = 0;
 
         let resume = await getResume();
 
@@ -311,6 +327,8 @@ export default defineContentScript({
       const urlChanged = window.location.href !== lastUrl;
       if (urlChanged) {
         lastUrl = window.location.href;
+        clearPendingRetry();
+        consecutiveFails = 0;
         cleanupBadge?.();
         cleanupBadge = null;
         detectAndInject(0).catch(() => undefined);
@@ -318,10 +336,15 @@ export default defineContentScript({
       }
 
       // If we are on a job page but badge was not yet mounted, trigger detection
-      if (isJobPage(window.location.href) && !document.querySelector('[data-aurescout-badge]')) {
+      // Avoid hammering if job description element is not loaded on this page
+      if (
+        isJobPage(window.location.href) &&
+        !document.querySelector('[data-aurescout-badge]') &&
+        consecutiveFails < 6
+      ) {
         detectAndInject(0).catch(() => undefined);
       }
-    }, 700);
+    }, 1000);
 
     // ── Initial detection ─────────────────────────────────────────────────────
     setTimeout(() => detectAndInject(0).catch(() => undefined), 400);
