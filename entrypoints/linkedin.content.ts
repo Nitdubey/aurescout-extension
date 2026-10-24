@@ -322,31 +322,65 @@ export default defineContentScript({
       return false;
     });
 
-    // ── Continuous check for URL changes and unmounted badges ────────────────
-    setInterval(() => {
-      const urlChanged = window.location.href !== lastUrl;
-      if (urlChanged) {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    function debouncedDetect(delay = 120) {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        detectAndInject(0).catch(() => undefined);
+      }, delay);
+    }
+
+    const onUrlOrJobChange = () => {
+      if (window.location.href !== lastUrl) {
         lastUrl = window.location.href;
         clearPendingRetry();
         consecutiveFails = 0;
         cleanupBadge?.();
         cleanupBadge = null;
-        detectAndInject(0).catch(() => undefined);
+        debouncedDetect(80);
+      }
+    };
+
+    window.addEventListener('popstate', onUrlOrJobChange);
+
+    // ── Debounced MutationObserver for LinkedIn Split-Pane (<150ms switch detection) ──
+    const observer = new MutationObserver((mutations) => {
+      let isRelevant = false;
+      for (const m of mutations) {
+        if (
+          m.target instanceof HTMLElement &&
+          (m.target.closest('.scaffold-layout__detail') ||
+           m.target.closest('.jobs-search__job-details') ||
+           m.target.closest('.job-details-jobs-unified-top-card__job-title'))
+        ) {
+          isRelevant = true;
+          break;
+        }
+      }
+      if (isRelevant || window.location.href !== lastUrl) {
+        onUrlOrJobChange();
+        debouncedDetect(120);
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Fallback safety poll
+    setInterval(() => {
+      if (window.location.href !== lastUrl) {
+        onUrlOrJobChange();
         return;
       }
-
-      // If we are on a job page but badge was not yet mounted, trigger detection
-      // Avoid hammering if job description element is not loaded on this page
       if (
         isJobPage(window.location.href) &&
         !document.querySelector('[data-aurescout-badge]') &&
         consecutiveFails < 6
       ) {
-        detectAndInject(0).catch(() => undefined);
+        debouncedDetect(120);
       }
-    }, 1000);
+    }, 1500);
 
-    // ── Initial detection ─────────────────────────────────────────────────────
-    setTimeout(() => detectAndInject(0).catch(() => undefined), 400);
+    // ── Initial detection ──
+    debouncedDetect(200);
   },
 });

@@ -1,5 +1,6 @@
 // ── AureScout Offline Matching Engine: Tokenizer & Stemmer ─────────────────────
 // Runs 100% client-side in extension content script (<1ms latency).
+// Preserves technical symbols (C++, C#, .NET, Node.js, Next.js, React.js, CI/CD, AWS, K8s).
 
 export const STOP_WORDS = new Set([
   'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of',
@@ -61,8 +62,29 @@ export function stem(word: string): string {
 }
 
 /**
+ * Normalizes technical symbols before punctuation stripping.
+ */
+export function normalizeTechnicalTokens(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/\bc\+\+/gi, ' cpp ')
+    .replace(/\bc#/gi, ' csharp ')
+    .replace(/\.net\b/gi, ' dotnet ')
+    .replace(/\bnode\.js\b/gi, ' nodejs ')
+    .replace(/\bnext\.js\b/gi, ' nextjs ')
+    .replace(/\breact\.js\b/gi, ' reactjs ')
+    .replace(/\bvue\.js\b/gi, ' vuejs ')
+    .replace(/\bnuxt\.js\b/gi, ' nuxtjs ')
+    .replace(/\bthree\.js\b/gi, ' threejs ')
+    .replace(/\bd3\.js\b/gi, ' d3js ')
+    .replace(/\bci\/cd\b/gi, ' cicd ')
+    .replace(/\bk8s\b/gi, ' k8s ')
+    .replace(/\baws\b/gi, ' aws ');
+}
+
+/**
  * Tokenizes raw text:
- * - Normalizes special tech abbreviations (C++, C#, .NET)
+ * - Normalizes special tech abbreviations (C++, C#, .NET, Node.js, Next.js, React.js, CI/CD, AWS, K8s)
  * - Lowercases and strips punctuation
  * - Removes stop words
  * - Applies lightweight stemming
@@ -71,11 +93,7 @@ export function tokenize(text: string): string[] {
   if (!text || typeof text !== 'string') return [];
 
   // Protect key programming tokens before punctuation stripping
-  const normalized = text
-    .replace(/\bc\+\+/gi, ' cpp ')
-    .replace(/\bc#/gi, ' csharp ')
-    .replace(/\.net\b/gi, ' dotnet ')
-    .toLowerCase();
+  const normalized = normalizeTechnicalTokens(text).toLowerCase();
 
   // Strip non-alphanumeric punctuation and split on whitespace
   const rawWords = normalized
@@ -99,8 +117,7 @@ export function tokenize(text: string): string[] {
 export function extractNgrams(tokens: string[], n: number): string[] {
   if (!tokens || n <= 0 || tokens.length < n) return [];
   const ngrams: string[] = [];
-  const limit = tokens.length - n;
-  for (let i = 0; i <= limit; i++) {
+  for (let i = 0; i <= tokens.length - n; i++) {
     ngrams.push(tokens.slice(i, i + n).join(' '));
   }
   return ngrams;

@@ -1,13 +1,14 @@
 /**
  * AureScout Universal Content Script
  * Handles: Indeed, Naukri, Glassdoor, Wellfound, Greenhouse, Lever
+ * Agent-16: <150ms debounced MutationObserver & SPA navigation support
  */
 
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { extractJob, isJobPage, detectPlatform } from '@/lib/extractors/index';
 import { getResume, saveResume } from '@/lib/storage/resume';
 import { isJobSaved } from '@/lib/storage/jobs';
-import { matchOffline } from '@/lib/matching/matcher';
+import { matchOffline, createEmptyMatchResult } from '@/lib/matching/matcher';
 import { getUserProfile } from '@/lib/auth';
 
 export default defineContentScript({
@@ -55,15 +56,7 @@ export default defineContentScript({
 
       let score = 0;
       let tier = 'NOT A FIT';
-      let matchResult: import('@/lib/matching/matcher').MatchResult = {
-        score: 0,
-        tier: 'NOT A FIT',
-        matchedSkills: [],
-        missingSkills: [],
-        resumeSkills: [],
-        jdSkills: [],
-        latencyMs: 0,
-      };
+      let matchResult = createEmptyMatchResult();
 
       if (resume) {
         matchResult = matchOffline(resume.text, job.description);
@@ -99,45 +92,36 @@ export default defineContentScript({
         document.querySelector('h2');
 
       if (!anchor?.parentElement) return () => undefined;
-      if (anchor.parentElement.querySelector('[data-aurescout-badge]')) {
-        return () => undefined; // already injected
-      }
+      if (anchor.parentElement.querySelector('[data-aurescout-badge]')) return () => undefined;
+
+      const host = document.createElement('div');
+      host.setAttribute('data-aurescout-badge', 'true');
+      host.style.cssText = 'display:inline-flex;align-items:center;margin-left:8px;vertical-align:middle;';
+
+      const shadow = host.attachShadow({ mode: 'closed' });
 
       const colors: Record<string, string> = {
         'STRONG FIT': '#22c55e',
         'PARTIAL FIT': '#f59e0b',
         'NOT A FIT': '#ef4444',
       };
-
-      const host = document.createElement('div');
-      host.setAttribute('data-aurescout-badge', 'true');
-      host.style.cssText = 'display:inline-flex;align-items:center;margin-top:6px;';
-
-      const shadow = host.attachShadow({ mode: 'closed' });
-      const bgColor = noResume ? '#f3f4f6' : (colors[tier] ?? '#6b7280');
-      const textColor = noResume ? '#6b7280' : '#fff';
-      const label = noResume ? 'Add Resume for Score' : `${score}% Match`;
+      const color = noResume ? '#6b7280' : (colors[tier] ?? '#6b7280');
 
       shadow.innerHTML = `
         <style>
           .badge {
-            display: inline-flex; align-items: center; gap: 5px;
-            padding: 4px 12px; border-radius: 20px;
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 2px 8px; border-radius: 20px;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            font-size: 12px; font-weight: 600; cursor: pointer;
-            background: ${bgColor}; color: ${textColor};
-            border: ${noResume ? '1px dashed #d1d5db' : 'none'};
-            box-shadow: 0 1px 4px rgba(0,0,0,0.12);
-            white-space: nowrap; transition: opacity 0.15s;
+            font-size: 11px; font-weight: 600; cursor: pointer;
+            background: ${color}; color: #fff; border: none;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+            white-space: nowrap;
           }
           .badge:hover { opacity: 0.85; }
-          .platform { font-size: 10px; opacity: 0.8; }
         </style>
-        <button class="badge" title="AureScout Match Score">
-          <span>⚡</span>
-          <span>${label}</span>
-          ${!noResume && tier ? `<span class="platform">${tier}</span>` : ''}
-          ${isSaved ? '<span>✓</span>' : ''}
+        <button class="badge" title="AureScout Match — click to open Side Panel">
+          ⚡ ${noResume ? 'Add Resume' : `${score}% ${tier}`}${isSaved ? ' · Saved' : ''}
         </button>
       `;
 
@@ -146,13 +130,12 @@ export default defineContentScript({
         chrome.runtime.sendMessage({ type: 'OPEN_SIDE_PANEL' });
       });
 
-      // Insert after anchor or after parent
       anchor.parentElement.insertBefore(host, anchor.nextSibling);
 
       return () => host.remove();
     }
 
-    function scheduleDetection(delay = 1200) {
+    function scheduleDetection(delay = 120) {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         detectAndInject().catch(() => undefined);
@@ -162,37 +145,58 @@ export default defineContentScript({
     // Direct trigger from background or sidepanel
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg?.type === 'TRIGGER_DETECTION') {
-        scheduleDetection(100);
+        scheduleDetection(50);
         sendResponse({ ok: true });
       }
       return false;
     });
 
-    // SPA navigation monitoring via continuous check + popstate
-    window.addEventListener('popstate', () => {
+    // SPA navigation monitoring via popstate & history state listeners
+    const onLocationChange = () => {
       if (window.location.href !== currentUrl) {
         currentUrl = window.location.href;
         cleanupBadge?.();
         cleanupBadge = null;
-        scheduleDetection(300);
+        scheduleDetection(100);
+      }
+    };
+
+    window.addEventListener('popstate', onLocationChange);
+
+    // Intelligent MutationObserver for SPA detail panes (<150ms switch detection)
+    const observer = new MutationObserver((mutations) => {
+      let isRelevant = false;
+      for (const m of mutations) {
+        if (
+          m.target instanceof HTMLElement &&
+          (m.target.closest('#jobsearch-ViewjobPaneWrapper') ||
+           m.target.closest('.jd-container') ||
+           m.target.closest('[class*="JobDetails"]') ||
+           m.target.closest('[data-testid="job-title"]'))
+        ) {
+          isRelevant = true;
+          break;
+        }
+      }
+      if (isRelevant || window.location.href !== currentUrl) {
+        onLocationChange();
+        scheduleDetection(120);
       }
     });
 
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Fallback safety poll
     setInterval(() => {
       if (window.location.href !== currentUrl) {
-        currentUrl = window.location.href;
-        cleanupBadge?.();
-        cleanupBadge = null;
-        scheduleDetection(300);
+        onLocationChange();
         return;
       }
-
-      // If on a job page and badge isn't mounted, detect
       if (isJobPage(window.location.href) && !document.querySelector('[data-aurescout-badge]')) {
-        scheduleDetection(400);
+        scheduleDetection(120);
       }
-    }, 1200);
+    }, 1500);
 
-    scheduleDetection(600);
+    scheduleDetection(150);
   },
 });
